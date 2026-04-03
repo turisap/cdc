@@ -1,0 +1,9 @@
+version: "3.9"
+
+dotenv: [.env]
+
+includes:
+  dev:
+    taskfile: ./scripts/dev.yml
+    vars:
+      DOCKER_COMPOSE_FILE: ./docker-compose.yml

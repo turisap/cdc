@@ -1,0 +1,20 @@
+version: "3.9"
+
+tasks:
+  up:
+    desc: Start all services
+    cmds:
+      - docker compose up -d
+    status:
+      - docker compose ps | grep -q "Up"
+
+  down:
+    desc: Stop all services
+    cmds:
+      - docker compose down -v
+
+  restart:
+    desc: Restart all services
+    cmds:
+      - docker compose down
+      - docker compose up -d
