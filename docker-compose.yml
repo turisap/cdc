@@ -44,21 +44,21 @@ services:
       timeout: 10s
       retries: 5
 
-  debezium:
-    image: debezium/server:${DEBEZIUM_VERSION}
-    container_name: cdc-debezium
-    environment:
-      DEBEZIUM_CONFIG_FILE: /debezium-config/application.properties
-      DEBEZIUM_LOG_LEVEL: INFO
-    ports:
-      - "${DEBEZIUM_PORT}:8080"
-    depends_on:
-      kafka:
-        condition: service_healthy
-      postgres:
-        condition: service_healthy
-    volumes:
-      - ./debezium-config:/debezium-config
+  # debezium:
+  #   image: debezium/server:${DEBEZIUM_VERSION}
+  #   container_name: cdc-debezium
+  #   environment:
+  #     DEBEZIUM_CONFIG_FILE: /debezium/conf/application.properties
+  #     DEBEZIUM_LOG_LEVEL: INFO
+  #   ports:
+  #     - "${DEBEZIUM_PORT}:8080"
+  #   depends_on:
+  #     kafka:
+  #       condition: service_healthy
+  #     postgres:
+  #       condition: service_healthy
+  #   volumes:
+  #     - ./debezium-config/application.properties:/debezium/conf/application.properties:ro
 
   redis:
     image: redis:7-alpine

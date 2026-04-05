@@ -1,7 +1,6 @@
 ---
 description: Updates agents.md after a coding session
 agent: build
-model: minimax/MiniMax-M2.5
 ---
 
 After a coding session, I need to reflect changes in AGENTS.md. I will update the file with the latest information about
