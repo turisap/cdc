@@ -3,3 +3,9 @@
 # Ignore .env files
 .env
 .env-*
+
+# Ignore node_modules
+node_modules/
+
+# md files
+objective.md
