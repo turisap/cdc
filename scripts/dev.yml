@@ -13,7 +13,7 @@ tasks:
     cmds:
       - docker compose down -v
 
-  restart:
+  default:
     desc: Restart all services
     cmds:
       - docker compose down

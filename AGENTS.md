@@ -4,7 +4,7 @@ Pet project for CDC (Change Data Capture) - deriving data from Postgres to Redis
 
 ## Project Structure
 
-- `docker-compose.yml` - Docker services: Postgres, Kafka, Redis (Debezium commented out)
+- `docker-compose.yml` - Docker services: Postgres, Kafka, Redis, Kafka UI (Debezium commented out)
 - `.env` - Environment variables for all services
 - `taskfile.yml` - Global task file loading .env
 - `scripts/dev.yml` - Dev tasks for docker compose operations
@@ -17,6 +17,7 @@ Pet project for CDC (Change Data Capture) - deriving data from Postgres to Redis
 | Postgres | 5432 | Source database |
 | Kafka    | 9092 | Message broker |
 | Redis    | 6379 | Target cache |
+| Kafka UI | 8080 | Web UI for Kafka cluster management |
 
 ## Tasks
 
@@ -26,5 +27,6 @@ Pet project for CDC (Change Data Capture) - deriving data from Postgres to Redis
 
 ## Notes
 
+- Kafka UI available at http://localhost:8080
 - Debezium is currently disabled due to kafka serializer configuration issues
 - Kafka uses single-node configuration (KAFKA_NODE_ID=1, replication factor=1)
