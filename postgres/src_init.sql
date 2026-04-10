@@ -140,3 +140,18 @@ VALUES
  '10000000-0000-0000-0000-000000000001',
  '00000000-0000-0000-0000-000000000003',
  'watcher', now(), now(), 2);
+
+
+-- DEBEZIUM
+-- required for Debezium
+ALTER
+SYSTEM SET wal_level = logical;
+ALTER
+SYSTEM SET max_replication_slots = 10;
+ALTER
+SYSTEM SET max_wal_senders = 10;
+
+CREATE ROLE debezium WITH LOGIN PASSWORD 'debezium' REPLICATION;
+GRANT
+SELECT
+ON ALL TABLES IN SCHEMA public TO debezium;
