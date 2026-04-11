@@ -1,0 +1,32 @@
+{
+  "name": "cdc-work-items-connector",
+  "config": {
+    "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+    "database.hostname": "postgres",
+    "database.port": "5432",
+    "database.user": "debezium",
+    "database.password": "debezium",
+    "database.dbname": "cdc_db",
+    "database.server.name": "workitems",
+    "plugin.name": "pgoutput",
+    "slot.name": "debezium_workitems_slot",
+    "publication.name": "debezium_workitems_pub",
+    "table.include.list": "public.work_item,public.work_assignment,public.user_profile",
+    "tombstones.on.delete": "true",
+    "slot.drop.on.stop": "false",
+    "snapshot.mode": "initial",
+    "snapshot.fetch.size": "10000",
+    "max.batch.size": "2048",
+    "max.queue.size": "8192",
+    "poll.interval.ms": "1000",
+    "decimal.handling.mode": "string",
+    "time.precision.mode": "connect",
+    "include.schema.changes": "false",
+    "heartbeat.interval.ms": "10000",
+    "heartbeat.topics.prefix": "heartbeat",
+    "key.converter": "org.apache.kafka.connect.json.JsonConverter",
+    "key.converter.schemas.enable": "false",
+    "value.converter": "org.apache.kafka.connect.json.JsonConverter",
+    "value.converter.schemas.enable": "false"
+  }
+}
