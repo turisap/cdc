@@ -13,52 +13,57 @@ services:
     volumes:
       - ./postgres/src_init.sql:/docker-entrypoint-initdb.d/src_init.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER}" ]
       interval: 5s
       timeout: 5s
       retries: 5
 
   kafka:
-    image: confluentinc/cp-kafka:${KAFKA_VERSION}
-    container_name: cdc-kafka
+    image: bitnamilegacy/kafka:3.7.0
     environment:
-      KAFKA_NODE_ID: ${KAFKA_NODE_ID}
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
-      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
-      KAFKA_CONTROLLER_QUORUM_VOTERS: ${KAFKA_NODE_ID}@localhost:9093
-      KAFKA_PROCESS_ROLES: broker,controller
-      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
-      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
-      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
-      KAFKA_LOG_DIRS: /var/lib/kafka/data
-      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+      - KAFKA_ENABLE_KRAFT=yes
+      - KAFKA_CFG_PROCESS_ROLES=broker,controller
+      - KAFKA_CFG_CONTROLLER_LISTENER_NAMES=CONTROLLER
+      - KAFKA_CFG_LISTENERS=PLAINTEXT://:29092,CONTROLLER://:9093,PLAINTEXT_HOST://0.0.0.0:9092
+      - KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      - KAFKA_BROKER_ID=1
+      - KAFKA_CFG_CONTROLLER_QUORUM_VOTERS=1@kafka:9093
+      - ALLOW_PLAINTEXT_LISTENER=yes
+      - KAFKA_KRAFT_CLUSTER_ID=kpIbwIMvnTCuozWPYnta
+      - KAFKA_CFG_NODE_ID=1
     ports:
       - "${KAFKA_PORT}:9092"
     volumes:
       - kafka_data:/var/lib/kafka/data
     healthcheck:
-      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      test: [ "CMD", "bash", "-c", "kafka-topics.sh --bootstrap-server localhost:9092 --list" ]
       interval: 10s
       timeout: 10s
-      retries: 5
+      retries: 10
+      start_period: 20s
 
-  # debezium:
-  #   image: debezium/server:${DEBEZIUM_VERSION}
-  #   container_name: cdc-debezium
-  #   environment:
-  #     DEBEZIUM_CONFIG_FILE: /debezium/conf/application.properties
-  #     DEBEZIUM_LOG_LEVEL: INFO
-  #   ports:
-  #     - "${DEBEZIUM_PORT}:8080"
-  #   depends_on:
-  #     kafka:
-  #       condition: service_healthy
-  #     postgres:
-  #       condition: service_healthy
-  #   volumes:
-  #     - ./debezium-config/application.properties:/debezium/conf/application.properties:ro
+  debezium:
+    image: debezium/connect:2.6
+    container_name: cdc-debezium
+    environment:
+      BOOTSTRAP_SERVERS: kafka:29092
+      GROUP_ID: "1"
+      CONFIG_STORAGE_TOPIC: "connect-configs"
+      OFFSET_STORAGE_TOPIC: "connect-offsets"
+      STATUS_STORAGE_TOPIC: "connect-status"
+      KEY_CONVERTER: "org.apache.kafka.connect.json.JsonConverter"
+      VALUE_CONVERTER: "org.apache.kafka.connect.json.JsonConverter"
+      KEY_CONVERTER_SCHEMAS_ENABLE: "true"
+      VALUE_CONVERTER_SCHEMAS_ENABLE: "true"
+      ENABLE_DEBEZIUM_SCRIPTING: "true"
+    ports:
+      - "${DEBEZIUM_PORT}:8080"
+    depends_on:
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
 
   redis:
     image: redis:7-alpine
@@ -68,7 +73,7 @@ services:
     volumes:
       - redis_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: [ "CMD", "redis-cli", "ping" ]
       interval: 5s
       timeout: 5s
       retries: 5
