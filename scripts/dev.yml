@@ -1,5 +1,10 @@
 version: "3.9"
 
+vars:
+
+  DEBEZIUM_PORT: "{{.DEBEZIUM_PORT}}"
+  CONNECTOR_SRC: src_connector
+
 tasks:
   up:
     desc: Start all services
@@ -16,5 +21,17 @@ tasks:
   default:
     desc: Restart all services
     cmds:
-      - docker compose down
-      - docker compose up -d
+      - task: down
+      - task: up
+      - task: configure
+
+  configure:
+    desc: Configure Debezium connector
+    cmds:
+      - |
+        sleep 15 && \
+        curl -X POST http://localhost:{{.DEBEZIUM_PORT}}/connectors \
+        -H "Content-Type: application/json" \
+        -d @./debezium-config/{{.CONNECTOR_SRC}}.json && \
+        sleep 1 && \
+        curl -X GET http://localhost:{{.DEBEZIUM_PORT}}/connectors/{{.CONNECTOR_SRC}}/status | jq

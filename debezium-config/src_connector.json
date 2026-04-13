@@ -1,5 +1,5 @@
 {
-  "name": "cdc-work-items-connector",
+  "name": "src_connector",
   "config": {
     "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
     "database.hostname": "postgres",
@@ -27,6 +27,7 @@
     "key.converter": "org.apache.kafka.connect.json.JsonConverter",
     "key.converter.schemas.enable": "false",
     "value.converter": "org.apache.kafka.connect.json.JsonConverter",
-    "value.converter.schemas.enable": "false"
+    "value.converter.schemas.enable": "false",
+    "topic.prefix": "cdc"
   }
 }

@@ -24,14 +24,18 @@ services:
       - KAFKA_ENABLE_KRAFT=yes
       - KAFKA_CFG_PROCESS_ROLES=broker,controller
       - KAFKA_CFG_CONTROLLER_LISTENER_NAMES=CONTROLLER
-      - KAFKA_CFG_LISTENERS=PLAINTEXT://:29092,CONTROLLER://:9093,PLAINTEXT_HOST://0.0.0.0:9092
-      - KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
-      - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
-      - KAFKA_BROKER_ID=1
+
+      - KAFKA_CFG_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093
+
+      - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://kafka:9092
+
+      - KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+
       - KAFKA_CFG_CONTROLLER_QUORUM_VOTERS=1@kafka:9093
-      - ALLOW_PLAINTEXT_LISTENER=yes
-      - KAFKA_KRAFT_CLUSTER_ID=kpIbwIMvnTCuozWPYnta
       - KAFKA_CFG_NODE_ID=1
+      - KAFKA_KRAFT_CLUSTER_ID=kpIbwIMvnTCuozWPYnta
+
+      - ALLOW_PLAINTEXT_LISTENER=yes
     ports:
       - "${KAFKA_PORT}:9092"
     volumes:
@@ -47,7 +51,7 @@ services:
     image: debezium/connect:2.6
     container_name: cdc-debezium
     environment:
-      BOOTSTRAP_SERVERS: kafka:29092
+      BOOTSTRAP_SERVERS: kafka:9092
       GROUP_ID: "1"
       CONFIG_STORAGE_TOPIC: "connect-configs"
       OFFSET_STORAGE_TOPIC: "connect-offsets"
@@ -58,7 +62,7 @@ services:
       VALUE_CONVERTER_SCHEMAS_ENABLE: "true"
       ENABLE_DEBEZIUM_SCRIPTING: "true"
     ports:
-      - "${DEBEZIUM_PORT}:8080"
+      - "${DEBEZIUM_PORT}:8083"
     depends_on:
       kafka:
         condition: service_healthy
@@ -83,8 +87,8 @@ services:
     container_name: cdc-kafka-ui
     environment:
       KAFKA_CLUSTERS_0_NAME: cdc-cluster
-      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: cdc-kafka:9092
       KAFKA_CLUSTERS_0_ZOOKEEPER: cdc-kafka:2181
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
     ports:
       - "${KAFKA_UI_PORT:-8080}:8080"
     depends_on:
