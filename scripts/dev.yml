@@ -25,13 +25,25 @@ tasks:
       - task: up
       - task: configure
 
-  configure:
-    desc: Configure Debezium connector
+  submit:
+    desc: Submit Debezium connector
     cmds:
       - |
-        sleep 15 && \
         curl -X POST http://localhost:{{.DEBEZIUM_PORT}}/connectors \
         -H "Content-Type: application/json" \
         -d @./debezium-config/{{.CONNECTOR_SRC}}.json && \
         sleep 1 && \
         curl -X GET http://localhost:{{.DEBEZIUM_PORT}}/connectors/{{.CONNECTOR_SRC}}/status | jq
+
+  configure:
+    desc: Configure Debezium connector
+    cmds:
+      - sleep 15
+      - task: submit
+
+  reconfig:
+    desc: Delete configs
+    cmds:
+      - curl -X DELETE http://localhost:{{.DEBEZIUM_PORT}}/connectors/{{.CONNECTOR_SRC}}
+      - sleep 2
+      - task: submit
