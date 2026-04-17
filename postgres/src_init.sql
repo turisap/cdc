@@ -186,3 +186,7 @@ GRANT SELECT ON TABLE public.user_items_projection TO debezium;
 
 ALTER
 ROLE debezium WITH REPLICATION;
+
+CREATE
+PUBLICATION debezium_workitems_pub
+FOR TABLE public.user_items_projection;
