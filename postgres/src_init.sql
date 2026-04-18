@@ -163,7 +163,6 @@ CREATE TABLE user_items_projection
 );
 
 -- DEBEZIUM
--- required for Debezium
 ALTER
 SYSTEM SET wal_level = logical;
 ALTER
@@ -171,10 +170,8 @@ SYSTEM SET max_replication_slots = 10;
 ALTER
 SYSTEM SET max_wal_senders = 10;
 
--- user
 CREATE ROLE debezium WITH LOGIN PASSWORD 'debezium';
 
--- DB access
 GRANT
 CONNECT
 ON DATABASE cdc_db TO debezium;
@@ -190,3 +187,68 @@ ROLE debezium WITH REPLICATION;
 CREATE
 PUBLICATION debezium_workitems_pub
 FOR TABLE public.user_items_projection;
+
+
+-- COMPUTATION OF OUTBOX
+
+CREATE
+OR REPLACE FUNCTION compute_task_flags(
+  status TEXT,
+  due_at TIMESTAMPTZ
+)
+RETURNS TABLE (is_active BOOLEAN, is_expired BOOLEAN)
+AS $$
+BEGIN
+RETURN QUERY SELECT
+    (status = 'active') AS is_active,
+    (status = 'active' AND due_at IS NOT NULL AND due_at < now()) AS is_expired;
+END;
+$$
+LANGUAGE plpgsql;
+
+CREATE
+OR REPLACE FUNCTION sync_projection_from_work_item()
+RETURNS TRIGGER AS $$
+DECLARE
+flags RECORD;
+BEGIN
+SELECT *
+INTO flags
+FROM compute_task_flags(NEW.status, NEW.due_at);
+
+UPDATE user_items_projection
+SET status     = NEW.status,
+    due_at     = NEW.due_at,
+    is_active  = flags.is_active,
+    is_expired = flags.is_expired,
+    version    = NEW.version,
+    updated_at = now()
+WHERE task_id = NEW.id;
+
+INSERT INTO user_items_projection (user_id, task_id, role,
+                                   status, due_at, created_at,
+                                   is_active, is_expired,
+                                   version, updated_at)
+VALUES (NEW.author_id, NEW.id, 'author',
+        NEW.status, NEW.due_at, NEW.created_at,
+        flags.is_active, flags.is_expired,
+        NEW.version, now()) ON CONFLICT (user_id, task_id, role)
+  DO
+UPDATE SET
+    status = EXCLUDED.status,
+    due_at = EXCLUDED.due_at,
+    is_active = EXCLUDED.is_active,
+    is_expired = EXCLUDED.is_expired,
+    version = EXCLUDED.version,
+    updated_at = now();
+
+RETURN NEW;
+END;
+$$
+LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_work_item_projection
+    AFTER INSERT OR
+UPDATE ON work_item
+    FOR EACH ROW
+    EXECUTE FUNCTION sync_projection_from_work_item();
