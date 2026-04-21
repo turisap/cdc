@@ -23,7 +23,7 @@
     "slot.name": "debezium_workitems_slot",
     "snapshot.fetch.size": "10000",
     "snapshot.mode": "initial",
-    "table.include.list": "public.user_item_projection",
+    "table.include.list": "public.user_items_projection",
     "time.precision.mode": "connect",
     "tombstones.on.delete": "true",
     "topic.prefix": "cdc",
