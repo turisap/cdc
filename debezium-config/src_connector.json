@@ -16,6 +16,7 @@
     "key.converter.schemas.enable": "false",
     "max.batch.size": "2048",
     "max.queue.size": "8192",
+    "message.key.columns": "public.user_items_projection:user_id,task_id",
     "plugin.name": "pgoutput",
     "poll.interval.ms": "1000",
     "publication.name": "debezium_workitems_pub",

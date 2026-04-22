@@ -47,6 +47,23 @@ services:
       retries: 10
       start_period: 20s
 
+  kafka-init:
+    image: bitnamilegacy/kafka:3.7.0
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: [ "bash", "-c" ]
+    command: >
+      "
+      kafka-topics.sh
+      --bootstrap-server kafka:9092
+      --create
+      --if-not-exists
+      --topic cdc.public.user_items_projection
+      --partitions 5
+      --replication-factor 1
+      " 
+
   debezium:
     image: debezium/connect:2.6
     container_name: cdc-debezium
