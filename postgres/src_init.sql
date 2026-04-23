@@ -1,14 +1,12 @@
--- =========================================================
--- CLEAN CDC DEMO SCHEMA (NO VERSION IN SOURCE TABLE)
--- =========================================================
-
+CREATE
+EXTENSION IF NOT EXISTS "uuid-ossp";
 -- =========================
 -- CORE DOMAIN TABLES
 -- =========================
 
 CREATE TABLE work_item
 (
-    id         UUID PRIMARY KEY,
+    id         UUID PRIMARY KEY     default uuid_generate_v4(),
     title      TEXT        NOT NULL,
 
     status     TEXT        NOT NULL CHECK (
@@ -23,13 +21,13 @@ CREATE TABLE work_item
 
 CREATE TABLE work_assignment
 (
-    id           UUID PRIMARY KEY,
+    id           UUID PRIMARY KEY     default uuid_generate_v4(),
     work_item_id UUID        NOT NULL REFERENCES work_item (id),
 
     user_id      UUID        NOT NULL,
 
     role         TEXT        NOT NULL CHECK (
-        role IN ('owner', 'executor', 'watcher')
+        role IN ('owner', 'executor', 'watcher', 'reviewer')
         ),
 
     created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -38,7 +36,7 @@ CREATE TABLE work_assignment
 
 CREATE TABLE user_profile
 (
-    user_id  UUID PRIMARY KEY,
+    user_id  UUID PRIMARY KEY default uuid_generate_v4(),
     timezone TEXT NOT NULL
 );
 
@@ -48,23 +46,23 @@ CREATE TABLE user_profile
 
 CREATE TABLE user_items_projection
 (
-    user_id    UUID        NOT NULL,
-    task_id    UUID        NOT NULL,
-    role       TEXT        NOT NULL,
+    user_id      UUID        NOT NULL,
+    work_item_id UUID        NOT NULL,
+    role         TEXT        NOT NULL,
 
-    status     TEXT        NOT NULL,
+    status       TEXT        NOT NULL,
 
-    due_at     TIMESTAMPTZ,
-    created_at TIMESTAMPTZ NOT NULL,
+    due_at       TIMESTAMPTZ,
+    created_at   TIMESTAMPTZ NOT NULL,
 
-    is_active  BOOLEAN     NOT NULL,
-    is_expired BOOLEAN     NOT NULL,
+    is_active    BOOLEAN     NOT NULL,
+    is_expired   BOOLEAN     NOT NULL,
 
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
 
-    version    BIGINT      NOT NULL,
+    version      BIGINT      NOT NULL,
 
-    PRIMARY KEY (user_id, task_id, role)
+    PRIMARY KEY (user_id, work_item_id, role)
 );
 
 -- =========================================================
@@ -148,7 +146,7 @@ FROM compute_task_flags(NEW.status, NEW.due_at);
 
 -- UPSERT with version control
 INSERT INTO user_items_projection (user_id,
-                                   task_id,
+                                   work_item_id,
                                    role,
                                    status,
                                    due_at,
@@ -166,7 +164,7 @@ VALUES (NEW.id, -- TODO replace with real user_id mapping
         flags.is_active,
         flags.is_expired,
         1,
-        now()) ON CONFLICT (user_id, task_id, role)
+        now()) ON CONFLICT (user_id, work_item_id, role)
     DO
 UPDATE SET
     status = EXCLUDED.status,
@@ -202,7 +200,7 @@ IF
 wi.deleted_at IS NOT NULL THEN
 DELETE
 FROM user_items_projection
-WHERE task_id = wi.id
+WHERE work_item_id = wi.id
   AND user_id = COALESCE(NEW.user_id, OLD.user_id);
 RETURN NULL;
 END IF;
@@ -220,7 +218,7 @@ TG_OP = 'DELETE' OR (TG_OP = 'UPDATE' AND NEW.deleted_at IS NOT NULL) THEN
 DELETE
 FROM user_items_projection
 WHERE user_id = OLD.user_id
-  AND task_id = OLD.work_item_id
+  AND work_item_id = OLD.work_item_id
   AND role = OLD.role;
 
 RETURN NULL;
@@ -238,7 +236,7 @@ TG_OP = 'UPDATE' THEN
 DELETE
 FROM user_items_projection
 WHERE user_id = OLD.user_id
-  AND task_id = OLD.work_item_id
+  AND work_item_id = OLD.work_item_id
   AND role = OLD.role;
 END IF;
 END IF;
@@ -247,7 +245,7 @@ END IF;
     -- UPSERT NEW STATE
     -- =========================
 INSERT INTO user_items_projection (user_id,
-                                   task_id,
+                                   work_item_id,
                                    role,
                                    status,
                                    due_at,
@@ -265,7 +263,7 @@ VALUES (NEW.user_id,
         flags.is_active,
         flags.is_expired,
         1,
-        now()) ON CONFLICT (user_id, task_id, role)
+        now()) ON CONFLICT (user_id, work_item_id, role)
     DO
 UPDATE SET
     status = EXCLUDED.status,
@@ -280,7 +278,7 @@ END;
 $$
 LANGUAGE plpgsql;
 
--- @TODO a few partitions and finish triggers
+-- @TODO and finish triggers (rethink the whole projection sync and versioning)
 -- @TODO store only active records (not deleted or cancelled),
 -- @TODO use shorts keys instead projection:{user}:{task}:{role} p:{u}:{t}:{r} HSET p:1:100:executor v 3 a 1 e 0
 
@@ -307,30 +305,17 @@ ON work_assignment
 -- =========================================================
 
 INSERT INTO user_profile (user_id, timezone)
-VALUES ('00000000-0000-0000-0000-000000000001', 'Europe/Warsaw'),
-       ('00000000-0000-0000-0000-000000000002', 'Europe/Berlin'),
-       ('00000000-0000-0000-0000-000000000003', 'America/New_York'),
-       ('00000000-0000-0000-0000-000000000004', 'Asia/Tokyo');
+VALUES ('BBA1C98B-94F3-4265-9DC9-EE3A3E64A087', 'Europe/Warsaw'),
+       ('CE863D57-F767-4CE0-8EBB-FA108A99D324', 'Europe/Berlin'),
+       ('BE09B724-2075-4D65-B179-206C9251A751', 'America/New_York'),
+       ('3B9D8588-72D6-4CA0-BD69-271A8139907B', 'Asia/Tokyo');
 
 INSERT INTO work_item (id, title, status, due_at, created_at, updated_at, deleted_at)
-VALUES ('10000000-0000-0000-0000-000000000001', 'Active task 1', 'active', now() + interval '2 days', now(), now(),
-        NULL),
-       ('10000000-0000-0000-0000-000000000002', 'Active task 2', 'active', now() + interval '5 hours', now(), now(),
-        NULL),
-       ('10000000-0000-0000-0000-000000000003', 'Expired task', 'expired', now() - interval '1 day', now(), now(),
-        NULL),
-       ('10000000-0000-0000-0000-000000000004', 'Completed task', 'completed', now() - interval '2 days', now(), now(),
-        NULL),
-       ('10000000-0000-0000-0000-000000000005', 'Today task', 'active', now() + interval '2 hours', now(), now(), NULL),
-       ('10000000-0000-0000-0000-000000000006', 'Deleted task', 'active', now() + interval '1 day', now(), now(),
-        now());
+VALUES ('25AA3915-1A85-4553-90D7-F7C89B6D4268', 'Active task 1', 'active', now() + interval '2 days', now(), now(),
+        NULL);
 
-INSERT INTO work_assignment (id, work_item_id, user_id, role, created_at, deleted_at)
-VALUES ('20000000-0000-0000-0000-000000000001', '10000000-0000-0000-0000-000000000001',
-        '00000000-0000-0000-0000-000000000001', 'owner', now(), NULL),
-       ('20000000-0000-0000-0000-000000000002', '10000000-0000-0000-0000-000000000001',
-        '00000000-0000-0000-0000-000000000002', 'executor', now(), NULL),
-       ('20000000-0000-0000-0000-000000000003', '10000000-0000-0000-0000-000000000002',
-        '00000000-0000-0000-0000-000000000001', 'executor', now(), NULL),
-       ('20000000-0000-0000-0000-000000000004', '10000000-0000-0000-0000-000000000002',
-        '00000000-0000-0000-0000-000000000003', 'watcher', now(), NULL);
+INSERT INTO work_assignment (work_item_id, user_id, role, created_at, deleted_at)
+VALUES ('25AA3915-1A85-4553-90D7-F7C89B6D4268', '25AA3915-1A85-4553-90D7-F7C89B6D4268', 'owner', now(), NULL),
+       ('25AA3915-1A85-4553-90D7-F7C89B6D4268', '25AA3915-1A85-4553-90D7-F7C89B6D4268', 'watcher', now(), NULL),
+       ('25AA3915-1A85-4553-90D7-F7C89B6D4268', '25AA3915-1A85-4553-90D7-F7C89B6D4268', 'executor', now(), NULL),
+       ('25AA3915-1A85-4553-90D7-F7C89B6D4268', '25AA3915-1A85-4553-90D7-F7C89B6D4268', 'reviewer', now(), NULL)
