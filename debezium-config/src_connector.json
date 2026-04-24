@@ -16,7 +16,7 @@
     "key.converter.schemas.enable": "false",
     "max.batch.size": "2048",
     "max.queue.size": "8192",
-    "message.key.columns": "public.user_items_projection:user_id,task_id",
+    "message.key.columns": "public.user_items_projection:user_id,work_item_id",
     "plugin.name": "pgoutput",
     "poll.interval.ms": "1000",
     "publication.name": "debezium_workitems_pub",
@@ -34,6 +34,7 @@
     "transforms.unwrap.add.fields": "op,ts_ms,transaction.id,transaction.total_order,transaction.data_collection_order,source.table,source.db,source.ts_ms",
     "transforms.unwrap.add.fields.prefix": "__",
     "transforms.unwrap.type": "io.debezium.transforms.ExtractNewRecordState",
-    "provide.transaction.metadata": "true"
+    "provide.transaction.metadata": "true",
+    "publication.autocreate.mode": "disabled"
   }
 }

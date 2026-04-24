@@ -99,16 +99,12 @@ ON ALL TABLES IN SCHEMA public TO debezium;
 
 GRANT pg_read_all_data TO debezium;
 
-CREATE
-PUBLICATION debezium_workitems_pub
-FOR TABLE public.user_items_projection;
-
 -- =========================================================
 -- PUBLICATION (ONLY PROJECTION TABLE)
 -- =========================================================
 
 CREATE
-PUBLICATION debezium_pub
+PUBLICATION debezium_workitems_pub
 FOR TABLE public.user_items_projection;
 
 -- =========================================================
@@ -278,7 +274,7 @@ END;
 $$
 LANGUAGE plpgsql;
 
--- @TODO and finish triggers (rethink the whole projection sync and versioning)
+-- @TODO and finish triggers (rethink the whole projection sync and versioning) + data resnapshot after a bug (only partial data set - exlcude cancelled or done)
 -- @TODO store only active records (not deleted or cancelled),
 -- @TODO use shorts keys instead projection:{user}:{task}:{role} p:{u}:{t}:{r} HSET p:1:100:executor v 3 a 1 e 0
 
