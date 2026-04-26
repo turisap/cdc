@@ -8,75 +8,99 @@
 
 ### resnapshotting:
 
-* Step 1 — send SNAPSHOT_START to the control topic
-  This is a separate single-partition Kafka topic you own, not the CDC topic. Every consumer instance subscribes to it
-  independently of its main partition assignment.
-  json{ "type": "SNAPSHOT_START", "snapshot_id": "rs-20260424-1", "ts": 1745000000 }
-  When a consumer reads this, it switches its Redis write target from DB0 → DB1. Live events (op=c/u/d) keep arriving
-  and go to DB1. DB0 continues serving reads — zero downtime.
-* Step 2 — bump versions and let WAL do the work
-  sqlBEGIN;
+avoid the barrier entirely using a tombstone key convention
+Instead of a barrier message, embed the snapshot context into the key of every bump event. Your consumer detects it from
+the event itself:
+sql-- add a snapshot_id column to the projection table
+ALTER TABLE user_items_projection ADD COLUMN snapshot_id TEXT;
+
+-- when resnapshotting
 
 ```sql
 UPDATE user_items_projection
-SET version    = version + 1,
-    updated_at = now()
-WHERE deleted_at IS NULL; -- only rows you want re-emitted
-COMMIT;
+SET version     = version + 1,
+    updated_at  = now(),
+    snapshot_id = 'rs-1';
 ```
 
-This single transaction generates N WAL records (one per row), each flows through Debezium as op=u, lands in Kafka on
-the correct partition (because Debezium uses your message.key.columns), and the consumer writes them to DB1 with the
-version fence. A replayed v7 that's already in DB1 as v8 gets rejected. A row that was at v7 in Redis (DB0) and arrives
-as v8 gets applied.
-The transaction boundary matters here — all the bumps appear as one Postgres transaction in the WAL, but Debezium still
-emits them as individual row events. They're not atomic in Kafka, which is fine because each row is independent.
+The idea
+Instead of two Redis DBs, every key is namespaced with the snapshot ID:
+`p:{snapshot_id}:{user_id}:{work_item_id}:{role}`
+Normal keys (no snapshot in progress):
+`p:live:{user_id}:{work_item_id}:{role}`
+During re-snapshot, bump events carry snapshot_id = 'rs-1', so the consumer writes to:
+`p:rs-1:{user_id}:{work_item_id}:{role}`
+Live events still write to p:live:.... No switching, no coordination, both namespaces coexist.
+When snapshot is done, you do one atomic rename:
+-- Lua script, atomic
 
-* Step 3 — send SNAPSHOT_DONE
-  After the UPDATE commits and Debezium has had time to flush (you can wait for the WAL LSN to advance past your
-  transaction, or just wait a few seconds conservatively):
-  `json{ "type": "SNAPSHOT_DONE", "snapshot_id": "rs-20260424-1", "ts": 1745000010 }`
-  Each consumer instance, on receiving this, starts polling its own consumer lag. When lag hits zero on all assigned
-  partitions, it marks itself ready.
-* Step 4 — coordinate the swap
-  With multiple consumer instances you need all of them ready before swapping. Simple approach using Redis itself:
-
-```lua-- each consumer runs this when lag = 0
-local count = redis.call('INCR', 'snapshot:ready:rs-20260424-1')
-redis.call('EXPIRE', 'snapshot:ready:rs-20260424-1', 3600)
-if tonumber(count) >= tonumber(ARGV[1]) then   -- ARGV[1] = total instances
-redis.call('SWAPDB', 0, 1)
-return 1   -- this instance does the swap
+```lua
+local keys = redis.call('KEYS', 'p:rs-1:*')
+for _, k in ipairs(keys) do
+local newkey = k:gsub('^p:rs%-1:', 'p:live:')
+redis.call('RENAME', k, newkey)
 end
-return 0   -- waiting
 ```
 
-SWAPDB 0 1 is atomic and instant at the Redis level — no reader sees a partial state. DB0 becomes the new shadow, DB1
-becomes live.
+Which overwrites the live key with the snapshot value. Version fence ensures the higher version wins if a live event
+already updated the key after the snapshot wrote it.
+1. UPDATE projection SET snapshot_id='rs-1', version=version+1
+   -- Debezium emits bump events with snapshot_id field
 
-* Step 5 — switch writes back to DB0, flush old DB
-  All consumers switch write target back to DB0 (which is now the fresh shadow). Then FLUSHDB on what is now DB1 (the
-  old live data) to prepare it for the next re-snapshot cycle. Your system is back to normal.
+2. Consumer writes bump events to p:rs-1:... keys
+   Live events continue writing to p:live:... keys (snapshot_id=NULL)
 
-The one subtle problem: consumer starts up mid-snapshot
-Your control topic must be replayable from the beginning — set retention.ms = -1 (infinite) or at least long enough that
-a crashed consumer can restart, seek to offset 0 on the control topic, replay SNAPSHOT_START / SNAPSHOT_DONE, and
-reconstruct whether it should be in shadow mode or not. Without this a restarted consumer misses the SNAPSHOT_START,
-writes to DB0, and corrupts the shadow DB with stale data.
-On startup, every consumer should:
+3. When consumer lag = 0 on all partitions:
+   SET snapshot:current "rs-1"
+   -- instant cutover, readers now use rs-1 namespace
 
-Seek control topic to offset 0, read all messages
-Find the latest SNAPSHOT_START / SNAPSHOT_DONE pair
-If SNAPSHOT_START exists with no matching SNAPSHOT_DONE → snapshot in progress, write to DB1
-If both exist → snapshot complete, write to DB0
-Then resume normal partition consumption from committed offsets
+4. Background job: SCAN + DEL p:live:* (old namespace, lazy cleanup)
 
-What you don't need
+5. Next re-snapshot uses snapshot_id='rs-2', cutover flips to rs-2, cleanup rs-1
 
-Debezium signals — your UPDATE generates real WAL events
-A separate snapshot connector — same connector, same slot, no disruption
-Any Debezium configuration changes — this is entirely driven from your side
-Pausing the consumer — it runs continuously throughout, version fence handles everything
+### End of resnapshotting
+When your UPDATE commits, Postgres assigns it a Log Sequence Number (LSN). That LSN is the exact position in the WAL after which no more bump events exist. Debezium includes the source LSN in every event via your existing add.fields config (__source.lsn).
+So the flow becomes:
+1. run UPDATE, capture the commit LSN
+2. consumer tracks: have I seen an event with __source.lsn >= commit_lsn on every partition?
+3. when yes on all partitions → snapshot complete → flip snapshot:current
+   Step 1 — capture the commit LSN
+   sqlBEGIN;
+   UPDATE user_items_projection
+   SET    snapshot_id = 'rs-1',
+   version     = version + 1,
+   updated_at  = now();
 
-The whole thing is operationally just: write one Kafka message, run one SQL UPDATE, write another Kafka message, wait
-for lag, SWAPDB. Everything else is handled by mechanisms already in your system.
+-- capture LSN at commit time
+SELECT pg_current_wal_lsn() AS commit_lsn;
+COMMIT;
+Store that LSN somewhere your consumers can read it — simplest is Redis itself:
+SET snapshot:rs-1:commit_lsn "0/3A7F210"
+Step 2 — consumer watches for the watermark
+Every event from Debezium carries __source.lsn. Your consumer compares it against the stored commit LSN per partition:
+pythondef handle_event(event, partition):
+source_lsn = event.get('__source_lsn')
+current_snapshot = redis.get('snapshot:current')          # e.g. "live"
+pending_snapshot = redis.get('snapshot:pending')          # e.g. "rs-1"
+
+    if pending_snapshot:
+        commit_lsn = redis.get(f'snapshot:{pending_snapshot}:commit_lsn')
+        
+        # write to correct namespace
+        snapshot_id = event.get('snapshot_id') or 'live'
+        write_to_redis(event, namespace=snapshot_id)
+        
+        # check watermark
+        if lsn_gte(source_lsn, commit_lsn):
+            mark_partition_done(pending_snapshot, partition)
+            check_and_flip(pending_snapshot)
+    else:
+        write_to_redis(event, namespace='live')
+
+def check_and_flip(snapshot_id):
+total = get_total_partition_count()
+done  = redis.incr(f'snapshot:{snapshot_id}:partitions_done')
+if done >= total:
+redis.set('snapshot:current', snapshot_id)
+# background cleanup of old namespace
+Each partition independently marks itself done when it sees an event past the LSN watermark. The last partition to cross the watermark triggers the flip.
