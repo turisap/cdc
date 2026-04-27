@@ -62,6 +62,8 @@ CREATE TABLE user_items_projection
 
     version      BIGINT      NOT NULL,
 
+    snapshot_id  TEXT,
+
     PRIMARY KEY (user_id, work_item_id, role)
 );
 

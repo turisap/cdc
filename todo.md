@@ -44,6 +44,7 @@ end
 
 Which overwrites the live key with the snapshot value. Version fence ensures the higher version wins if a live event
 already updated the key after the snapshot wrote it.
+
 1. UPDATE projection SET snapshot_id='rs-1', version=version+1
    -- Debezium emits bump events with snapshot_id field
 
@@ -59,48 +60,36 @@ already updated the key after the snapshot wrote it.
 5. Next re-snapshot uses snapshot_id='rs-2', cutover flips to rs-2, cleanup rs-1
 
 ### End of resnapshotting
-When your UPDATE commits, Postgres assigns it a Log Sequence Number (LSN). That LSN is the exact position in the WAL after which no more bump events exist. Debezium includes the source LSN in every event via your existing add.fields config (__source.lsn).
-So the flow becomes:
-1. run UPDATE, capture the commit LSN
-2. consumer tracks: have I seen an event with __source.lsn >= commit_lsn on every partition?
-3. when yes on all partitions → snapshot complete → flip snapshot:current
-   Step 1 — capture the commit LSN
-   sqlBEGIN;
-   UPDATE user_items_projection
-   SET    snapshot_id = 'rs-1',
-   version     = version + 1,
-   updated_at  = now();
 
--- capture LSN at commit time
-SELECT pg_current_wal_lsn() AS commit_lsn;
+What you actually want is already there
+You're trying to avoid the LSN watermark because it feels like extra complexity. But look at what you already have in
+every Debezium event from your existing config:
+json"transforms.unwrap.add.fields": "op,ts_ms,transaction.id,transaction.total_order,
+transaction.data_collection_order,source.table,
+source.db,source.ts_ms"
+You're already capturing transaction.id. The bump UPDATE is one transaction — it has one transaction.id. That
+transaction ID is on every single bump event across every partition.
+So the signal is just:
+seen transaction.id = bump_tx_id on this partition? → partition done
+all partitions done? → flip
+Store the bump transaction ID in Redis when you start:
+sqlBEGIN;
+UPDATE cdc_config SET value = 'rs-1' WHERE key = 'current_snapshot_id';
+UPDATE user_items_projection SET snapshot_id = 'rs-1', version = version + 1, updated_at = now();
+SELECT txid_current(); -- capture this, store in Redis as snapshot:rs-1:tx_id
 COMMIT;
-Store that LSN somewhere your consumers can read it — simplest is Redis itself:
-SET snapshot:rs-1:commit_lsn "0/3A7F210"
-Step 2 — consumer watches for the watermark
-Every event from Debezium carries __source.lsn. Your consumer compares it against the stored commit LSN per partition:
-pythondef handle_event(event, partition):
-source_lsn = event.get('__source_lsn')
-current_snapshot = redis.get('snapshot:current')          # e.g. "live"
-pending_snapshot = redis.get('snapshot:pending')          # e.g. "rs-1"
+Consumer logic becomes:
+pythonbump_tx_id = redis.get('snapshot:rs-1:tx_id')
 
-    if pending_snapshot:
-        commit_lsn = redis.get(f'snapshot:{pending_snapshot}:commit_lsn')
-        
-        # write to correct namespace
-        snapshot_id = event.get('snapshot_id') or 'live'
-        write_to_redis(event, namespace=snapshot_id)
-        
-        # check watermark
-        if lsn_gte(source_lsn, commit_lsn):
-            mark_partition_done(pending_snapshot, partition)
-            check_and_flip(pending_snapshot)
-    else:
-        write_to_redis(event, namespace='live')
+if event['__transaction_id'] == bump_tx_id:
+mark_partition_done(partition)
+check_and_flip()
+No LSN parsing, no watermark comparison, no separate heartbeat. The transaction ID is an exact, unambiguous marker that
+is already in your events. When every partition has seen at least one event from that transaction, every bump row has
+been processed, and the flip is safe.
 
-def check_and_flip(snapshot_id):
-total = get_total_partition_count()
-done  = redis.incr(f'snapshot:{snapshot_id}:partitions_done')
-if done >= total:
-redis.set('snapshot:current', snapshot_id)
-# background cleanup of old namespace
-Each partition independently marks itself done when it sees an event past the LSN watermark. The last partition to cross the watermark triggers the flip.
+After the flip you set snapshot:current = rs-1. Your application now reads from p:rs-1:.... But new live events keep
+writing to p:live:.... You're back to the same problem as before — the application reads a namespace nobody is writing
+to.
+You can't avoid this. After the flip, live events must write to the new namespace. The consumer needs to know which
+namespace is currently live, and it gets that from snapshot:current in Redis:
