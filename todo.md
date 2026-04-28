@@ -80,16 +80,6 @@ SELECT txid_current(); -- capture this, store in Redis as snapshot:rs-1:tx_id
 COMMIT;
 Consumer logic becomes:
 pythonbump_tx_id = redis.get('snapshot:rs-1:tx_id')
-
-if event['__transaction_id'] == bump_tx_id:
-mark_partition_done(partition)
-check_and_flip()
-No LSN parsing, no watermark comparison, no separate heartbeat. The transaction ID is an exact, unambiguous marker that
-is already in your events. When every partition has seen at least one event from that transaction, every bump row has
-been processed, and the flip is safe.
-
-After the flip you set snapshot:current = rs-1. Your application now reads from p:rs-1:.... But new live events keep
-writing to p:live:.... You're back to the same problem as before — the application reads a namespace nobody is writing
-to.
-You can't avoid this. After the flip, live events must write to the new namespace. The consumer needs to know which
-namespace is currently live, and it gets that from snapshot:current in Redis:
+The real solution — don't rely on tx_id from outside
+Embed the tx_id inside the bump event itself by storing it in the projection table: currently live, and it gets that
+from snapshot:current in Redis:

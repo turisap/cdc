@@ -46,23 +46,23 @@ CREATE TABLE user_profile
 
 CREATE TABLE user_items_projection
 (
-    user_id      UUID        NOT NULL,
-    work_item_id UUID        NOT NULL,
-    role         TEXT        NOT NULL,
+    user_id        UUID        NOT NULL,
+    work_item_id   UUID        NOT NULL,
+    role           TEXT        NOT NULL,
 
-    status       TEXT        NOT NULL,
+    status         TEXT        NOT NULL,
 
-    due_at       TIMESTAMPTZ,
-    created_at   TIMESTAMPTZ NOT NULL,
+    due_at         TIMESTAMPTZ,
+    created_at     TIMESTAMPTZ NOT NULL,
 
-    is_active    BOOLEAN     NOT NULL,
-    is_expired   BOOLEAN     NOT NULL,
+    is_active      BOOLEAN     NOT NULL,
+    is_expired     BOOLEAN     NOT NULL,
 
-    updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
 
-    version      BIGINT      NOT NULL,
+    version        BIGINT      NOT NULL,
 
-    snapshot_id  TEXT,
+    snapshot_tx_id TEXT,
 
     PRIMARY KEY (user_id, work_item_id, role)
 );
