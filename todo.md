@@ -61,25 +61,19 @@ already updated the key after the snapshot wrote it.
 
 ### End of resnapshotting
 
-What you actually want is already there
-You're trying to avoid the LSN watermark because it feels like extra complexity. But look at what you already have in
-every Debezium event from your existing config:
-json"transforms.unwrap.add.fields": "op,ts_ms,transaction.id,transaction.total_order,
-transaction.data_collection_order,source.table,
-source.db,source.ts_ms"
-You're already capturing transaction.id. The bump UPDATE is one transaction — it has one transaction.id. That
-transaction ID is on every single bump event across every partition.
-So the signal is just:
-seen transaction.id = bump_tx_id on this partition? → partition done
-all partitions done? → flip
-Store the bump transaction ID in Redis when you start:
-sqlBEGIN;
-UPDATE cdc_config SET value = 'rs-1' WHERE key = 'current_snapshot_id';
-UPDATE user_items_projection SET snapshot_id = 'rs-1', version = version + 1, updated_at = now();
-SELECT txid_current(); -- capture this, store in Redis as snapshot:rs-1:tx_id
-COMMIT;
-Consumer logic becomes:
-pythonbump_tx_id = redis.get('snapshot:rs-1:tx_id')
-The real solution — don't rely on tx_id from outside
-Embed the tx_id inside the bump event itself by storing it in the projection table: currently live, and it gets that
-from snapshot:current in Redis:
+event arrives
+│
+├── snapshot_tx_id = NULL
+│ → live event
+│ → namespace = GET snapshot:current
+│ → write to p:<current>:...
+│
+└── snapshot_tx_id = "8675309"
+→ bump event
+→ namespace = "rs-8675309"   ← built directly from the tx_id, no lookup
+→ write to p:rs-8675309:...
+│
+└── __transaction_id == snapshot_tx_id? ← watermark check
+yes → vote this partition done
+check if all partitions done
+if yes → SET snapshot:current "rs-8675309"
