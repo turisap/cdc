@@ -1,5 +1,7 @@
 CREATE
 EXTENSION IF NOT EXISTS "uuid-ossp";
+
+CREATE TYPE service_id AS ENAM ('auto','web','mobile','api');
 -- =========================
 -- CORE DOMAIN TABLES
 -- =========================
@@ -63,6 +65,8 @@ CREATE TABLE user_items_projection
     version        BIGINT      NOT NULL,
 
     snapshot_tx_id TEXT,
+
+    service_id     service_id  NOT NULL,
 
     PRIMARY KEY (user_id, work_item_id, role)
 );
