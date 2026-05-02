@@ -1,7 +1,15 @@
 CREATE
 EXTENSION IF NOT EXISTS "uuid-ossp";
 
-CREATE TYPE service_id AS ENAM ('auto','web','mobile','api');
+CREATE TYPE service_id AS ENUM ('auto','web','mobile','api');
+CREATE
+OR REPLACE FUNCTION random_service_id()
+    RETURNS service_id
+    LANGUAGE sql
+AS
+$$
+SELECT (ARRAY['auto','web','mobile','api'])[floor(random() * 2 + 1)::int]::service_id;
+$$;
 -- =========================
 -- CORE DOMAIN TABLES
 -- =========================
@@ -156,7 +164,8 @@ INSERT INTO user_items_projection (user_id,
                                    is_active,
                                    is_expired,
                                    version,
-                                   updated_at)
+                                   updated_at,
+                                   service_id)
 VALUES (NEW.id, -- TODO replace with real user_id mapping
         NEW.id,
         'owner',
@@ -166,7 +175,9 @@ VALUES (NEW.id, -- TODO replace with real user_id mapping
         flags.is_active,
         flags.is_expired,
         1,
-        now()) ON CONFLICT (user_id, work_item_id, role)
+        now(),
+        random_service_id()) ON CONFLICT (user_id, work_item_id, role)
+
     DO
 UPDATE SET
     status = EXCLUDED.status,
@@ -255,7 +266,8 @@ INSERT INTO user_items_projection (user_id,
                                    is_active,
                                    is_expired,
                                    version,
-                                   updated_at)
+                                   updated_at,
+                                   service_id)
 VALUES (NEW.user_id,
         NEW.work_item_id,
         NEW.role,
@@ -265,7 +277,8 @@ VALUES (NEW.user_id,
         flags.is_active,
         flags.is_expired,
         1,
-        now()) ON CONFLICT (user_id, work_item_id, role)
+        now(),
+        random_service_id()) ON CONFLICT (user_id, work_item_id, role)
     DO
 UPDATE SET
     status = EXCLUDED.status,
