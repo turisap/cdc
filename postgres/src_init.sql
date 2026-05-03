@@ -121,6 +121,8 @@ CREATE
 PUBLICATION debezium_workitems_pub
 FOR TABLE public.user_items_projection;
 
+ALTER TABLE user_items_projection REPLICA IDENTITY FULL;
+
 -- =========================================================
 -- BUSINESS LOGIC: FLAGS CALCULATION
 -- =========================================================

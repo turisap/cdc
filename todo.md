@@ -77,3 +77,12 @@ event arrives
 yes → vote this partition done
 check if all partitions done
 if yes → SET snapshot:current "rs-8675309"
+
+### Consumer
+
+1. store previous state in the Debezium event itself
+   Debezium's ExtractNewRecordState SMT can include the before-image:
+   json"transforms.unwrap.add.fields": "before"
+   Each event then carries both before and after state. Consumer computes the delta without needing to read from Redis
+   first — no extra round trip, no row hashes needed in Redis at all.
+2. @TODO before state
