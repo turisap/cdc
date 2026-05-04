@@ -116,12 +116,11 @@ GRANT pg_read_all_data TO debezium;
 -- =========================================================
 -- PUBLICATION (ONLY PROJECTION TABLE)
 -- =========================================================
-
+ALTER TABLE user_items_projection REPLICA IDENTITY FULL;
 CREATE
+
 PUBLICATION debezium_workitems_pub
 FOR TABLE public.user_items_projection;
-
-ALTER TABLE user_items_projection REPLICA IDENTITY FULL;
 
 -- =========================================================
 -- BUSINESS LOGIC: FLAGS CALCULATION

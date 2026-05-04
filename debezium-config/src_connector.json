@@ -30,12 +30,6 @@
     "topic.prefix": "cdc",
     "value.converter": "org.apache.kafka.connect.json.JsonConverter",
     "value.converter.schemas.enable": "false",
-    "transforms": "unwrap",
-    "transforms.unwrap.add.fields": "op,ts_ms,transaction.id,transaction.total_order,transaction.data_collection_order,source.table,source.db,source.ts_ms",
-    "transforms.unwrap.add.fields.prefix": "__",
-    "transforms.unwrap.type": "io.debezium.transforms.ExtractNewRecordState",
-    "transforms.unwrap.delete.handling.mode": "rewrite",
-    "transforms.unwrap.before.handling.mode": "keep",
     "provide.transaction.metadata": "true",
     "publication.autocreate.mode": "disabled"
   }
