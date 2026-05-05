@@ -8,7 +8,7 @@ OR REPLACE FUNCTION random_service_id()
     LANGUAGE sql
 AS
 $$
-SELECT (ARRAY['auto','web','mobile','api'])[floor(random() * 2 + 1)::int]::service_id;
+SELECT (ARRAY['auto', 'web', 'mobile', 'api'])[floor(random() * 2 + 1)::int]::service_id;
 $$;
 -- =========================
 -- CORE DOMAIN TABLES
@@ -145,6 +145,7 @@ LANGUAGE plpgsql;
 -- PROJECTION SYNC TRIGGER (SOURCE OF TRUTH FOR CDC)
 -- =========================================================
 
+-- UPSERT with version control
 CREATE
 OR REPLACE FUNCTION sync_projection_from_work_item()
 RETURNS TRIGGER AS $$
@@ -155,40 +156,24 @@ SELECT *
 INTO flags
 FROM compute_task_flags(NEW.status, NEW.due_at);
 
--- UPSERT with version control
-INSERT INTO user_items_projection (user_id,
-                                   work_item_id,
-                                   role,
-                                   status,
-                                   due_at,
-                                   created_at,
-                                   is_active,
-                                   is_expired,
-                                   version,
-                                   updated_at,
-                                   service_id)
-VALUES (NEW.id, -- TODO replace with real user_id mapping
-        NEW.id,
-        'owner',
-        NEW.status,
-        NEW.due_at,
-        NEW.created_at,
-        flags.is_active,
-        flags.is_expired,
-        1,
-        now(),
-        random_service_id()) ON CONFLICT (user_id, work_item_id, role)
+-- handle soft delete — remove all projection rows for this item
+IF
+NEW.deleted_at IS NOT NULL THEN
+DELETE
+FROM user_items_projection
+WHERE work_item_id = NEW.id;
+RETURN NEW;
+END IF;
 
-    DO
-UPDATE SET
-    status = EXCLUDED.status,
-    due_at = EXCLUDED.due_at,
-    is_active = EXCLUDED.is_active,
-    is_expired = EXCLUDED.is_expired,
-
-    version = user_items_projection.version + 1,
-
-    updated_at = now();
+    -- propagate status/flag changes to ALL assigned users and roles
+UPDATE user_items_projection
+SET status     = NEW.status,
+    due_at     = NEW.due_at,
+    is_active  = flags.is_active,
+    is_expired = flags.is_expired,
+    version    = version + 1,
+    updated_at = now()
+WHERE work_item_id = NEW.id;
 
 RETURN NEW;
 END;
