@@ -9,8 +9,7 @@ OR REPLACE FUNCTION random_service_id()
     LANGUAGE sql
 AS
 $$
--- SELECT (ARRAY['auto'])[floor(random() * 2 + 1)::int]::service_id;
-SELECT 'auto'::service_id;
+SELECT (ARRAY['auto', 'web', 'mobile', 'api'])[floor(random() * 2 + 1)::int]::service_id;
 $$;
 
 -- =========================
@@ -104,6 +103,57 @@ PUBLICATION debezium_workitems_pub
     FOR TABLE public.user_items_projection;
 
 -- =========================================================
+-- AUDIT TABLES
+-- append-only, never updated or deleted
+-- one row per state change on the source entity
+-- =========================================================
+
+CREATE TABLE work_item_audit
+(
+    id           UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    work_item_id UUID NOT NULL,
+    action       TEXT NOT NULL CHECK (action IN ('created', 'updated', 'deleted')
+) ,
+
+    -- full snapshot of the row at the time of the change
+    title        TEXT        NOT NULL,
+    status       TEXT        NOT NULL,
+    due_at       TIMESTAMPTZ,
+
+    -- what changed (NULL on create)
+    old_status   TEXT,
+    old_due_at   TIMESTAMPTZ,
+    old_title    TEXT,
+
+    changed_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    changed_by   service_id  NOT NULL  -- which service triggered the change
+);
+
+CREATE TABLE work_assignment_audit
+(
+    id           UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    work_item_id UUID NOT NULL,
+    action       TEXT NOT NULL CHECK (action IN ('assigned', 'reassigned', 'unassigned')
+) ,
+
+    -- current state
+    user_id        UUID        NOT NULL,
+    role           TEXT        NOT NULL,
+
+    -- previous state — populated on reassign, NULL on first assign / unassign
+    old_user_id    UUID,
+    old_role       TEXT,
+
+    changed_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    changed_by     service_id  NOT NULL
+);
+
+-- indexes for the most common audit queries
+CREATE INDEX idx_work_item_audit_work_item_id ON work_item_audit (work_item_id, changed_at DESC);
+CREATE INDEX idx_work_assignment_audit_item_id ON work_assignment_audit (work_item_id, changed_at DESC);
+CREATE INDEX idx_work_assignment_audit_user_id ON work_assignment_audit (user_id, changed_at DESC);
+
+-- =========================================================
 -- PROJECTION SYNC TRIGGERS
 -- =========================================================
 
@@ -112,16 +162,44 @@ OR REPLACE FUNCTION sync_projection_from_work_item()
     RETURNS TRIGGER AS
 $$
 BEGIN
-    -- soft delete — remove all projection rows for this item
+    -- audit: created
     IF
-NEW.deleted_at IS NOT NULL THEN
+TG_OP = 'INSERT' THEN
+        INSERT INTO work_item_audit (work_item_id, action, title, status, due_at,
+                                     old_status, old_due_at, old_title, changed_by)
+        VALUES (NEW.id, 'created', NEW.title, NEW.status, NEW.due_at,
+                NULL, NULL, NULL, random_service_id());
+RETURN NEW;
+END IF;
+
+    -- audit: deleted (soft delete)
+    IF
+NEW.deleted_at IS NOT NULL AND OLD.deleted_at IS NULL THEN
+        INSERT INTO work_item_audit (work_item_id, action, title, status, due_at,
+                                     old_status, old_due_at, old_title, changed_by)
+        VALUES (NEW.id, 'deleted', NEW.title, NEW.status, NEW.due_at,
+                OLD.status, OLD.due_at, OLD.title, random_service_id());
+
+        -- remove all projection rows for this item
 DELETE
 FROM user_items_projection
 WHERE work_item_id = NEW.id;
 RETURN NEW;
 END IF;
 
-    -- propagate status changes to ALL assigned users and roles
+    -- audit: updated (only when something meaningful changed)
+    IF
+OLD.status IS DISTINCT FROM NEW.status
+        OR OLD.due_at IS DISTINCT FROM NEW.due_at
+        OR OLD.title  IS DISTINCT FROM NEW.title THEN
+
+        INSERT INTO work_item_audit (work_item_id, action, title, status, due_at,
+                                     old_status, old_due_at, old_title, changed_by)
+        VALUES (NEW.id, 'updated', NEW.title, NEW.status, NEW.due_at,
+                OLD.status, OLD.due_at, OLD.title, random_service_id());
+END IF;
+
+    -- propagate status/due_at changes to ALL assigned users and roles
 UPDATE user_items_projection
 SET status     = NEW.status,
     due_at     = NEW.due_at,
@@ -140,15 +218,22 @@ OR REPLACE FUNCTION sync_projection_from_assignment()
     RETURNS TRIGGER AS
 $$
 DECLARE
-wi RECORD;
+wi         RECORD;
+    svc
+service_id;
 BEGIN
 SELECT *
 INTO wi
 FROM work_item
 WHERE id = COALESCE(NEW.work_item_id, OLD.work_item_id);
 
--- work_item soft deleted — remove projection row for this user
-IF
+-- roll service_id once per trigger execution
+svc
+:= random_service_id();
+
+    -- work_item soft deleted — remove projection row for this user, no audit entry
+    -- (work_item_audit already captured the deletion)
+    IF
 wi.deleted_at IS NOT NULL THEN
 DELETE
 FROM user_items_projection
@@ -157,9 +242,14 @@ WHERE work_item_id = wi.id
 RETURN NULL;
 END IF;
 
-    -- assignment hard delete or soft delete
+    -- assignment hard delete or soft delete → unassigned
     IF
 TG_OP = 'DELETE' OR (TG_OP = 'UPDATE' AND NEW.deleted_at IS NOT NULL) THEN
+        INSERT INTO work_assignment_audit (work_item_id, action, user_id, role,
+                                           old_user_id, old_role, changed_by)
+        VALUES (OLD.work_item_id, 'unassigned', OLD.user_id, OLD.role,
+                NULL, NULL, svc);
+
 DELETE
 FROM user_items_projection
 WHERE user_id = OLD.user_id
@@ -168,10 +258,24 @@ WHERE user_id = OLD.user_id
 RETURN NULL;
 END IF;
 
-    -- role or user reassignment — remove old projection row
+    -- first assignment → assigned
     IF
+TG_OP = 'INSERT' THEN
+        INSERT INTO work_assignment_audit (work_item_id, action, user_id, role,
+                                           old_user_id, old_role, changed_by)
+        VALUES (NEW.work_item_id, 'assigned', NEW.user_id, NEW.role,
+                NULL, NULL, svc);
+
+    -- role or user changed → reassigned
+    ELSIF
 TG_OP = 'UPDATE' THEN
         IF OLD.role IS DISTINCT FROM NEW.role OR OLD.user_id IS DISTINCT FROM NEW.user_id THEN
+            INSERT INTO work_assignment_audit (work_item_id, action, user_id, role,
+                                               old_user_id, old_role, changed_by)
+            VALUES (NEW.work_item_id, 'reassigned', NEW.user_id, NEW.role,
+                    OLD.user_id, OLD.role, svc);
+
+            -- remove old projection row
 DELETE
 FROM user_items_projection
 WHERE user_id = OLD.user_id
@@ -180,7 +284,7 @@ WHERE user_id = OLD.user_id
 END IF;
 END IF;
 
-    -- upsert new state
+    -- upsert projection
 INSERT INTO user_items_projection (user_id,
                                    work_item_id,
                                    role,
@@ -199,7 +303,7 @@ VALUES (NEW.user_id,
         wi.created_at,
         1,
         now(),
-        random_service_id(),
+        svc,
         NULL) ON CONFLICT (user_id, work_item_id, role) DO
 UPDATE
     SET status = EXCLUDED.status,
