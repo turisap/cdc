@@ -6,77 +6,32 @@
 * what to do with the debezium heartbeat topic debezium
 * what to do with the debezium cdc.transaction topic
 
-### resnapshotting:
+### flow:
 
-avoid the barrier entirely using a tombstone key convention
-Instead of a barrier message, embed the snapshot context into the key of every bump event. Your consumer detects it from
-the event itself:
-sql-- add a snapshot_id column to the projection table
-ALTER TABLE user_items_projection ADD COLUMN snapshot_id TEXT;
-
--- when resnapshotting
-
-```sql
-UPDATE user_items_projection
-SET version     = version + 1,
-    updated_at  = now(),
-    snapshot_id = 'rs-1';
-```
-
-The idea
-Instead of two Redis DBs, every key is namespaced with the snapshot ID:
-`p:{snapshot_id}:{user_id}:{work_item_id}:{role}`
-Normal keys (no snapshot in progress):
-`p:live:{user_id}:{work_item_id}:{role}`
-During re-snapshot, bump events carry snapshot_id = 'rs-1', so the consumer writes to:
-`p:rs-1:{user_id}:{work_item_id}:{role}`
-Live events still write to p:live:.... No switching, no coordination, both namespaces coexist.
-When snapshot is done, you do one atomic rename:
--- Lua script, atomic
-
-```lua
-local keys = redis.call('KEYS', 'p:rs-1:*')
-for _, k in ipairs(keys) do
-local newkey = k:gsub('^p:rs%-1:', 'p:live:')
-redis.call('RENAME', k, newkey)
-end
-```
-
-Which overwrites the live key with the snapshot value. Version fence ensures the higher version wins if a live event
-already updated the key after the snapshot wrote it.
-
-1. UPDATE projection SET snapshot_id='rs-1', version=version+1
-   -- Debezium emits bump events with snapshot_id field
-
-2. Consumer writes bump events to p:rs-1:... keys
-   Live events continue writing to p:live:... keys (snapshot_id=NULL)
-
-3. When consumer lag = 0 on all partitions:
-   SET snapshot:current "rs-1"
-   -- instant cutover, readers now use rs-1 namespace
-
-4. Background job: SCAN + DEL p:live:* (old namespace, lazy cleanup)
-
-5. Next re-snapshot uses snapshot_id='rs-2', cutover flips to rs-2, cleanup rs-1
-
-### End of resnapshotting
-
-event arrives
+receive event
 │
-├── snapshot_tx_id = NULL
-│ → live event
-│ → namespace = GET snapshot:current
-│ → write to p:<current>:...
+├── parse before / after / op / transaction.id
 │
-└── snapshot_tx_id = "8675309"
-→ bump event
-→ namespace = "rs-8675309"   ← built directly from the tx_id, no lookup
-→ write to p:rs-8675309:...
+├── derive namespace
+│     snapshot_tx_id != NULL → "rs-" + snapshot_tx_id
+│     snapshot_tx_id == NULL → GET snapshot:current
 │
-└── __transaction_id == snapshot_tx_id? ← watermark check
-yes → vote this partition done
-check if all partitions done
-if yes → SET snapshot:current "rs-8675309"
+├── compute delta
+│     op=d               → delta = -1 if before.status=active, else 0
+│     op=c / op=r        → delta = +1 if after.status=active,  else 0
+│     op=u, no role change→ delta from before→after status transition
+│     op=u, role changed  → before role -1 (if was active), after role +1 (if now active)
+│
+├── if delta != 0:
+│     run Lua script atomically:
+│       version fence check (reject if stale)
+│       HINCRBY counters:{ns}:{user_id}  active:{role}  {delta}
+│
+└── resnapshot watermark check
+if snapshot_tx_id != NULL AND transaction.id starts with snapshot_tx_id:
+SADD snapshot:tx:{snapshot_tx_id}:done {partition_id}
+if SCARD == total_partitions:
+SET snapshot:current "rs-{snapshot_tx_id}"
 
 ### Consumer
 

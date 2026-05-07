@@ -1,3 +1,4 @@
+-- @TODO go to the consumer-side
 CREATE
 EXTENSION IF NOT EXISTS "uuid-ossp";
 
