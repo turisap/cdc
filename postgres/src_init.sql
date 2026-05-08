@@ -1,28 +1,27 @@
 CREATE
 EXTENSION IF NOT EXISTS "uuid-ossp";
 
-CREATE TYPE service_id AS ENUM ('auto','web','mobile','api');
+CREATE TYPE service_id AS ENUM ('auto', 'web', 'mobile', 'api');
+
 CREATE
 OR REPLACE FUNCTION random_service_id()
     RETURNS service_id
     LANGUAGE sql
 AS
 $$
-SELECT (ARRAY['auto', 'web', 'mobile', 'api'])[floor(random() * 2 + 1)::int]::service_id;
+-- SELECT (ARRAY['auto'])[floor(random() * 2 + 1)::int]::service_id;
+SELECT 'auto'::service_id;
 $$;
+
 -- =========================
 -- CORE DOMAIN TABLES
 -- =========================
 
 CREATE TABLE work_item
 (
-    id         UUID PRIMARY KEY     default uuid_generate_v4(),
+    id         UUID PRIMARY KEY     DEFAULT uuid_generate_v4(),
     title      TEXT        NOT NULL,
-
-    status     TEXT        NOT NULL CHECK (
-        status IN ('active', 'completed', 'expired')
-        ),
-
+    status     TEXT        NOT NULL CHECK (status IN ('active', 'completed', 'expired')),
     due_at     TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -31,22 +30,17 @@ CREATE TABLE work_item
 
 CREATE TABLE work_assignment
 (
-    id           UUID PRIMARY KEY     default uuid_generate_v4(),
+    id           UUID PRIMARY KEY     DEFAULT uuid_generate_v4(),
     work_item_id UUID        NOT NULL REFERENCES work_item (id),
-
     user_id      UUID        NOT NULL,
-
-    role         TEXT        NOT NULL CHECK (
-        role IN ('owner', 'executor', 'watcher', 'reviewer')
-        ),
-
+    role         TEXT        NOT NULL CHECK (role IN ('owner', 'executor', 'watcher', 'reviewer')),
     created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
     deleted_at   TIMESTAMPTZ
 );
 
 CREATE TABLE user_profile
 (
-    user_id  UUID PRIMARY KEY default uuid_generate_v4(),
+    user_id  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     timezone TEXT NOT NULL
 );
 
@@ -59,23 +53,13 @@ CREATE TABLE user_items_projection
     user_id        UUID        NOT NULL,
     work_item_id   UUID        NOT NULL,
     role           TEXT        NOT NULL,
-
     status         TEXT        NOT NULL,
-
     due_at         TIMESTAMPTZ,
     created_at     TIMESTAMPTZ NOT NULL,
-
-    is_active      BOOLEAN     NOT NULL,
-    is_expired     BOOLEAN     NOT NULL,
-
     updated_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
-
     version        BIGINT      NOT NULL,
-
     snapshot_tx_id TEXT,
-
     service_id     service_id  NOT NULL,
-
     PRIMARY KEY (user_id, work_item_id, role)
 );
 
@@ -95,7 +79,6 @@ SYSTEM SET max_wal_senders = 10;
 -- =========================================================
 
 CREATE ROLE debezium WITH LOGIN PASSWORD 'debezium';
-
 ALTER
 ROLE debezium WITH REPLICATION;
 
@@ -103,61 +86,34 @@ GRANT CONNECT
 ON DATABASE cdc_db TO debezium;
 GRANT TEMPORARY
 ON DATABASE cdc_db TO debezium;
-
 GRANT USAGE ON SCHEMA
 public TO debezium;
-
 GRANT
 SELECT
 ON ALL TABLES IN SCHEMA public TO debezium;
-
 GRANT pg_read_all_data TO debezium;
 
 -- =========================================================
 -- PUBLICATION (ONLY PROJECTION TABLE)
 -- =========================================================
+
 ALTER TABLE user_items_projection REPLICA IDENTITY FULL;
-CREATE
 
+CREATE
 PUBLICATION debezium_workitems_pub
-FOR TABLE public.user_items_projection;
+    FOR TABLE public.user_items_projection;
 
 -- =========================================================
--- BUSINESS LOGIC: FLAGS CALCULATION
+-- PROJECTION SYNC TRIGGERS
 -- =========================================================
 
-CREATE
-OR REPLACE FUNCTION compute_task_flags(
-    status TEXT,
-    due_at TIMESTAMPTZ
-)
-RETURNS TABLE (is_active BOOLEAN, is_expired BOOLEAN)
-AS $$
-BEGIN
-RETURN QUERY
-SELECT (status = 'active')                                           AS is_active,
-       (status = 'active' AND due_at IS NOT NULL AND due_at < now()) AS is_expired;
-END;
-$$
-LANGUAGE plpgsql;
-
--- =========================================================
--- PROJECTION SYNC TRIGGER (SOURCE OF TRUTH FOR CDC)
--- =========================================================
-
--- UPSERT with version control
 CREATE
 OR REPLACE FUNCTION sync_projection_from_work_item()
-RETURNS TRIGGER AS $$
-DECLARE
-flags RECORD;
+    RETURNS TRIGGER AS
+$$
 BEGIN
-SELECT *
-INTO flags
-FROM compute_task_flags(NEW.status, NEW.due_at);
-
--- handle soft delete — remove all projection rows for this item
-IF
+    -- soft delete — remove all projection rows for this item
+    IF
 NEW.deleted_at IS NOT NULL THEN
 DELETE
 FROM user_items_projection
@@ -165,12 +121,10 @@ WHERE work_item_id = NEW.id;
 RETURN NEW;
 END IF;
 
-    -- propagate status/flag changes to ALL assigned users and roles
+    -- propagate status changes to ALL assigned users and roles
 UPDATE user_items_projection
 SET status     = NEW.status,
     due_at     = NEW.due_at,
-    is_active  = flags.is_active,
-    is_expired = flags.is_expired,
     version    = version + 1,
     updated_at = now()
 WHERE work_item_id = NEW.id;
@@ -180,21 +134,20 @@ END;
 $$
 LANGUAGE plpgsql;
 
+
 CREATE
 OR REPLACE FUNCTION sync_projection_from_assignment()
-RETURNS TRIGGER AS $$
+    RETURNS TRIGGER AS
+$$
 DECLARE
-flags RECORD;
-    wi
-RECORD;
+wi RECORD;
 BEGIN
-    -- Load work_item
 SELECT *
 INTO wi
 FROM work_item
 WHERE id = COALESCE(NEW.work_item_id, OLD.work_item_id);
 
--- If task is deleted → remove projection rows
+-- work_item soft deleted — remove projection row for this user
 IF
 wi.deleted_at IS NOT NULL THEN
 DELETE
@@ -204,34 +157,21 @@ WHERE work_item_id = wi.id
 RETURN NULL;
 END IF;
 
-    -- Compute flags
-SELECT *
-INTO flags
-FROM compute_task_flags(wi.status, wi.due_at);
-
--- =========================
--- DELETE / SOFT DELETE
--- =========================
-IF
+    -- assignment hard delete or soft delete
+    IF
 TG_OP = 'DELETE' OR (TG_OP = 'UPDATE' AND NEW.deleted_at IS NOT NULL) THEN
 DELETE
 FROM user_items_projection
 WHERE user_id = OLD.user_id
   AND work_item_id = OLD.work_item_id
   AND role = OLD.role;
-
 RETURN NULL;
 END IF;
 
-    -- =========================
-    -- ROLE CHANGE (UPDATE)
-    -- =========================
+    -- role or user reassignment — remove old projection row
     IF
 TG_OP = 'UPDATE' THEN
-        -- If role OR user changed → remove old row
-        IF OLD.role IS DISTINCT FROM NEW.role
-           OR OLD.user_id IS DISTINCT FROM NEW.user_id THEN
-
+        IF OLD.role IS DISTINCT FROM NEW.role OR OLD.user_id IS DISTINCT FROM NEW.user_id THEN
 DELETE
 FROM user_items_projection
 WHERE user_id = OLD.user_id
@@ -240,37 +180,30 @@ WHERE user_id = OLD.user_id
 END IF;
 END IF;
 
-    -- =========================
-    -- UPSERT NEW STATE
-    -- =========================
+    -- upsert new state
 INSERT INTO user_items_projection (user_id,
                                    work_item_id,
                                    role,
                                    status,
                                    due_at,
                                    created_at,
-                                   is_active,
-                                   is_expired,
                                    version,
                                    updated_at,
-                                   service_id)
+                                   service_id,
+                                   snapshot_tx_id)
 VALUES (NEW.user_id,
         NEW.work_item_id,
         NEW.role,
         wi.status,
         wi.due_at,
         wi.created_at,
-        flags.is_active,
-        flags.is_expired,
         1,
         now(),
-        random_service_id()) ON CONFLICT (user_id, work_item_id, role)
-    DO
-UPDATE SET
-    status = EXCLUDED.status,
+        random_service_id(),
+        NULL) ON CONFLICT (user_id, work_item_id, role) DO
+UPDATE
+    SET status = EXCLUDED.status,
     due_at = EXCLUDED.due_at,
-    is_active = EXCLUDED.is_active,
-    is_expired = EXCLUDED.is_expired,
     version = user_items_projection.version + 1,
     updated_at = now();
 
@@ -279,17 +212,14 @@ END;
 $$
 LANGUAGE plpgsql;
 
--- @TODO and finish triggers (rethink the whole projection sync and versioning) + data resnapshot after a bug (only partial data set - exlcude cancelled or done)
--- @TODO store only active records (not deleted or cancelled),
--- @TODO use shorts keys instead projection:{user}:{task}:{role} p:{u}:{t}:{r} HSET p:1:100:executor v 3 a 1 e 0
-
 -- =========================================================
--- TRIGGER
+-- TRIGGERS
 -- =========================================================
 
-CREATE TRIGGER trg_work_item_projectionwork_assignment
+CREATE TRIGGER trg_work_item_projection
     AFTER INSERT OR
-UPDATE ON work_item
+UPDATE
+    ON work_item
     FOR EACH ROW
     EXECUTE FUNCTION sync_projection_from_work_item();
 
@@ -316,7 +246,7 @@ VALUES ('25AA3915-1A85-4553-90D7-F7C89B6D4268', 'Active task 1', 'active', now()
         NULL);
 
 INSERT INTO work_assignment (work_item_id, user_id, role, created_at, deleted_at)
-VALUES ('25AA3915-1A85-4553-90D7-F7C89B6D4268', '25AA3915-1A85-4553-90D7-F7C89B6D4268', 'owner', now(), NULL),
-       ('25AA3915-1A85-4553-90D7-F7C89B6D4268', '25AA3915-1A85-4553-90D7-F7C89B6D4268', 'watcher', now(), NULL),
-       ('25AA3915-1A85-4553-90D7-F7C89B6D4268', '25AA3915-1A85-4553-90D7-F7C89B6D4268', 'executor', now(), NULL),
-       ('25AA3915-1A85-4553-90D7-F7C89B6D4268', '25AA3915-1A85-4553-90D7-F7C89B6D4268', 'reviewer', now(), NULL)
+VALUES ('25AA3915-1A85-4553-90D7-F7C89B6D4268', 'BBA1C98B-94F3-4265-9DC9-EE3A3E64A087', 'owner', now(), NULL),
+       ('25AA3915-1A85-4553-90D7-F7C89B6D4268', 'CE863D57-F767-4CE0-8EBB-FA108A99D324', 'watcher', now(), NULL),
+       ('25AA3915-1A85-4553-90D7-F7C89B6D4268', 'BE09B724-2075-4D65-B179-206C9251A751', 'executor', now(), NULL),
+       ('25AA3915-1A85-4553-90D7-F7C89B6D4268', '3B9D8588-72D6-4CA0-BD69-271A8139907B', 'reviewer', now(), NULL);
