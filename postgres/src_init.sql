@@ -1,4 +1,4 @@
--- @TODO go to the consumer-side
+-- @TODO go to the kafka-side
 CREATE
 EXTENSION IF NOT EXISTS "uuid-ossp";
 
