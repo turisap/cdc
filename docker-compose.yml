@@ -120,6 +120,28 @@ services:
       kafka:
         condition: service_healthy
 
+  consumer:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile
+    deploy:
+      replicas: 5
+    environment:
+      KAFKA_BROKERS: kafka:9092
+      KAFKA_TOPIC: cdc.public.user_items_projection
+      KAFKA_GROUP_ID: cdc-consumer
+      KAFKA_TOTAL_PARTITIONS: "5"
+      REDIS_ADDR: redis:6379
+      INSTANCE_ID: "consumer-{{.Task.Slot}}"
+    depends_on:
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
 volumes:
   postgres_data:
   kafka_data:
