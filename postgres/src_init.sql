@@ -355,3 +355,74 @@ VALUES ('25AA3915-1A85-4553-90D7-F7C89B6D4268', 'BBA1C98B-94F3-4265-9DC9-EE3A3E6
        ('25AA3915-1A85-4553-90D7-F7C89B6D4268', 'CE863D57-F767-4CE0-8EBB-FA108A99D324', 'watcher', now(), NULL),
        ('25AA3915-1A85-4553-90D7-F7C89B6D4268', 'BE09B724-2075-4D65-B179-206C9251A751', 'executor', now(), NULL),
        ('25AA3915-1A85-4553-90D7-F7C89B6D4268', '3B9D8588-72D6-4CA0-BD69-271A8139907B', 'reviewer', now(), NULL);
+
+-- =============================================================
+-- TEST DATA
+-- work_items and assignments across all 4 users
+-- =============================================================
+
+-- active task, due in future — all 4 users assigned
+INSERT INTO work_item (id, title, status, due_at)
+VALUES ('aaaaaaaa-0000-0000-0000-000000000001', 'Design new onboarding flow', 'active', now() + interval '3 days');
+
+INSERT INTO work_assignment (work_item_id, user_id, role)
+VALUES ('aaaaaaaa-0000-0000-0000-000000000001', 'BBA1C98B-94F3-4265-9DC9-EE3A3E64A087', 'owner'),
+       ('aaaaaaaa-0000-0000-0000-000000000001', 'CE863D57-F767-4CE0-8EBB-FA108A99D324', 'executor'),
+       ('aaaaaaaa-0000-0000-0000-000000000001', 'BE09B724-2075-4D65-B179-206C9251A751', 'reviewer'),
+       ('aaaaaaaa-0000-0000-0000-000000000001', '3B9D8588-72D6-4CA0-BD69-271A8139907B', 'watcher');
+
+-- active task, overdue (due_at in the past)
+INSERT INTO work_item (id, title, status, due_at)
+VALUES ('aaaaaaaa-0000-0000-0000-000000000002', 'Fix payment gateway bug', 'active', now() - interval '1 day');
+
+INSERT INTO work_assignment (work_item_id, user_id, role)
+VALUES ('aaaaaaaa-0000-0000-0000-000000000002', 'BBA1C98B-94F3-4265-9DC9-EE3A3E64A087', 'executor'),
+       ('aaaaaaaa-0000-0000-0000-000000000002', 'CE863D57-F767-4CE0-8EBB-FA108A99D324', 'owner');
+
+-- active task, no due date
+INSERT INTO work_item (id, title, status, due_at)
+VALUES ('aaaaaaaa-0000-0000-0000-000000000003', 'Refactor auth module', 'active', NULL);
+
+INSERT INTO work_assignment (work_item_id, user_id, role)
+VALUES ('aaaaaaaa-0000-0000-0000-000000000003', 'BE09B724-2075-4D65-B179-206C9251A751', 'owner'),
+       ('aaaaaaaa-0000-0000-0000-000000000003', '3B9D8588-72D6-4CA0-BD69-271A8139907B', 'executor');
+
+-- completed task — should not count toward active counters
+INSERT INTO work_item (id, title, status, due_at)
+VALUES ('aaaaaaaa-0000-0000-0000-000000000004', 'Write Q1 report', 'completed', now() - interval '5 days');
+
+INSERT INTO work_assignment (work_item_id, user_id, role)
+VALUES ('aaaaaaaa-0000-0000-0000-000000000004', 'BBA1C98B-94F3-4265-9DC9-EE3A3E64A087', 'owner'),
+       ('aaaaaaaa-0000-0000-0000-000000000004', '3B9D8588-72D6-4CA0-BD69-271A8139907B', 'reviewer');
+
+-- expired task
+INSERT INTO work_item (id, title, status, due_at)
+VALUES ('aaaaaaaa-0000-0000-0000-000000000005', 'Update API docs', 'expired', now() - interval '2 days');
+
+INSERT INTO work_assignment (work_item_id, user_id, role)
+VALUES ('aaaaaaaa-0000-0000-0000-000000000005', 'CE863D57-F767-4CE0-8EBB-FA108A99D324', 'owner'),
+       ('aaaaaaaa-0000-0000-0000-000000000005', 'BE09B724-2075-4D65-B179-206C9251A751', 'watcher');
+
+-- =============================================================
+-- EXPECTED PROJECTION STATE after triggers fire:
+--
+-- user BBA1C98B (Warsaw)
+--   item-1 owner    active
+--   item-2 executor active (overdue)
+--   item-4 owner    completed
+--
+-- user CE863D57 (Berlin)
+--   item-1 executor active
+--   item-2 owner    active (overdue)
+--   item-5 owner    expired
+--
+-- user BE09B724 (New York)
+--   item-1 reviewer active
+--   item-3 owner    active
+--   item-5 watcher  expired
+--
+-- user 3B9D8588 (Tokyo)
+--   item-1 watcher  active
+--   item-3 executor active
+--   item-4 reviewer completed
+-- =============================================================
