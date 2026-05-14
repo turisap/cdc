@@ -54,6 +54,7 @@ func main() {
 	reader := kafkaclient.NewReader(cfg.KafkaBrokers, cfg.KafkaTopic, cfg.KafkaGroupID, log)
 	defer reader.Close()
 
+	// @TODO how versioning fence working?
 	handler := kafkaclient.NewHandler(rdb, cfg.TotalPartitions, log)
 
 	// graceful shutdown on SIGTERM / SIGINT
