@@ -43,7 +43,8 @@ Counter stays at `0`. Correct.
 Something poisoned Redis — `counters:live:user-A active:owner = 5` but the truth is `2`.
 
 You run the bump SQL. Every projection row gets `snapshot_tx_id = tx789` and `version = version + 1`.
-Debezium emits bump events. Consumer sees `snapshot_tx_id = tx789`, derives namespace `rs-tx789`, and writes to a completely separate set of keys:
+Debezium emits bump events. Consumer sees `snapshot_tx_id = tx789`, derives namespace `rs-tx789`, and writes to a
+completely separate set of keys:
 
 ```
 versions:rs-tx789:user-A  →  {}   ← starts empty
@@ -129,3 +130,17 @@ of what the old one contained.
 **Ordering** — within a partition Kafka guarantees events arrive in WAL order.
 The version fence is a backstop for replays, not the primary ordering mechanism.
 The primary mechanism is Kafka itself.
+
+## BFF and multi-service counters
+
+```
+service A (autoitems)     service B (manual items)    service C (future)
+   own Postgres DB            own Postgres DB              own Postgres DB
+   own Debezium               own Debezium                 own Debezium
+   own Kafka topic            own Kafka topic              own Kafka topic
+   own consumer               own consumer                 own consumer
+   own Redis counters         own Redis counters            own Redis counters
+        ↓                          ↓                             ↓
+                          BFF / API gateway
+                    merges counters at request time
+```
