@@ -143,4 +143,12 @@ service A (autoitems)     service B (manual items)    service C (future)
         ↓                          ↓                             ↓
                           BFF / API gateway
                     merges counters at request time
+         
+work_item + work_assignment
+    → triggers
+    → user_items_projection
+    → Debezium
+    → Kafka
+    → consumer
+    → Redis counters:{service}:{ns}:{user}
 ```
