@@ -152,3 +152,58 @@ work_item + work_assignment
     → consumer
     → Redis counters:{service}:{ns}:{user}
 ```
+
+## Alternative: Raw tables + consumer joins
+
+### Pros
+
+* Zero DB changes — you deploy Debezium against your existing tables and nothing in your application schema changes. No
+  migration risk on a live DB.
+* No trigger latency — every assignment write is now just a write. No hidden SELECT on work_item inside a trigger, no
+  synchronous side effect.
+* Simpler write path — application writes one row, done. Projection logic lives entirely in the consumer, not split
+  between DB triggers and consumer.
+* Easier to evolve — adding a new counter dimension means changing consumer code only, not trigger functions and schema.
+  Consumer deploys independently of the DB.
+* No projection table maintenance — no resnapshot procedure touching a separate table, no version column to manage in
+  Postgres, no audit of the projection itself.
+
+### Cons
+
+* Consumer must join two streams — work_assignment tells you a user has a role. work_item tells you the status. To
+  compute
+  is_active you need both. A work_item status change (active → completed) arrives on the work_item topic but you need to
+  know all assignments for that item to decrement the right user counters. The consumer must maintain a local state
+  store
+  or cache of (work_item_id → status) to resolve this.
+  work_item event:   item-1 status=completed
+  consumer thinks:   which users are assigned to item-1? what roles?
+  answer:            not in this event — must look it up
+  You need either:
+
+* A Redis cache of item_id → {user_id, role}[] maintained by consuming work_assignment events
+  Or a Postgres read from the service DB on every work_item status event (defeats the purpose)
+
+* Out-of-order events between tables — work_assignment and work_item are separate Kafka topics with separate partitions.
+  A
+  work_item completed event can arrive before the work_assignment created event for the same item. Your consumer must
+  handle this gracefully — buffer or defer events until both sides are known.
+* Resnapshot is harder — you have two tables to resnapshot instead of one. They must be resnapshotted consistently — if
+  you resnapshot work_item but not work_assignment your consumer state is inconsistent. The single-table resnapshot
+  procedure you designed becomes a two-table coordination problem.
+* Version fencing becomes complex — in your current design every projection row has one version that covers the full
+  joined state. With raw tables, work_item has its own version and work_assignment has its own version. The consumer
+  must
+  fence both independently and correlate them to produce one counter delta. Much harder to get right.
+* REPLICA IDENTITY on source tables — you need REPLICA IDENTITY FULL on work_item and work_assignment for before-images.
+  In a live DB this means a schema change (ALTER TABLE) which briefly takes a lock and increases WAL volume for every
+  update on those tables — potentially significant if they are high-write.
+* Message key partitioning — your current setup partitions by (user_id, work_item_id) on the projection table, which
+  guarantees all events for a given user+item pair land on the same partition. With raw tables, work_item events have no
+  user_id — you'd partition by work_item_id only, which means the consumer must fan out a single item event to multiple
+  user counters while maintaining ordering guarantees.
+
+![Screenshot 2026-05-18 at 13.41.50.png](Screenshot%202026-05-18%20at%2013.41.50.png)
+
+In conclusion - projection table is a simpler, more robust, and easier to maintain solution for this use case. The raw
+table approach is possible but introduces significant complexity and risk for relatively little gain.
